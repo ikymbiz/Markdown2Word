@@ -1,0 +1,617 @@
+Attribute VB_Name = "mdl_markdown2word"
+Option Explicit
+'Refference
+'https://vba-assets.net/outline/
+
+Dim sngFont As Single       'フォントサイズ
+Dim strFont As String       'フォント名
+Dim strMark As String       'マークダウン記号
+Dim strFirstNo As String    '最初の見出し番号
+Dim strBlankStop As String  '空白行での処理停止
+Dim objParas As Object      '段落オブジェクトのコレクション
+
+Sub StartUp()
+'各種オプションをテンプレート自体のドキュメントから読み込みます。
+
+Dim i As Long                       '段落番号
+Dim objPara As Object               '対象となる段落オブジェクト
+Dim brnMark                         'マークダウン記号の有無
+    
+'画面の更新を無効にする
+Application.ScreenUpdating = False
+
+'進捗状況を表示する
+Application.StatusBar = "オプションを設定しています。"
+
+'アドインドキュメントの段落オブジェクトのコレクションを取得する
+Set objParas = ThisDocument.Paragraphs
+
+'オプションを設定する
+For i = 1 To ThisDocument.Paragraphs.Count
+    '対象となる段落オブジェクトを取得する
+    Set objPara = objParas(i)
+    
+    'フォントサイズを取得する
+    If Left(objPara.Range.Text, 8) = "フォントサイズ：" Then
+        sngFont = Split(objPara.Range.Text, "：")(1)
+    End If
+    
+    If Left(objPara.Range.Text, 6) = "フォント名：" Then
+        strFont = Split(objPara.Range.Text, "：")(1)
+        strFont = Replace(strFont, vbCr, "")
+    End If
+    
+    If Left(objPara.Range.Text, 9) = "最初の見出し番号：" Then
+        strFirstNo = Split(objPara.Range.Text, "：")(1)
+        strFirstNo = Replace(strFirstNo, vbCr, "")
+    End If
+    
+    If Left(objPara.Range.Text, 9) = "マークダウン記号：" Then
+        strMark = Split(objPara.Range.Text, "：")(1)
+        strMark = Replace(strMark, vbCr, "")
+    End If
+    
+    If Left(objPara.Range.Text, 14) = "行頭の空白文字で処理を停止：" Then
+        strBlankStop = Split(objPara.Range.Text, "：")(1)
+        strBlankStop = Replace(strBlankStop, vbCr, "")
+    End If
+Next
+  
+'マークダウンの記号に「.」が用いられている場合は「...」のオートコレクトを解除する
+If strMark = "." Then
+    On Error Resume Next
+    AutoCorrect.Entries("...").Delete
+    On Error GoTo 0
+End If
+
+'マークダウン記号の有無に応じて処理を行う
+Call FormatToggle
+    
+'進捗状況を表示する
+Application.StatusBar = ""
+    
+'画面の更新を有効にする
+Application.ScreenUpdating = True
+    
+End Sub
+Sub FormatToggle()
+'マークダウン用の記号が段落の先頭に含まれているかどうかを確認し、その結果に応じて、
+'マクロを起動します。
+
+Dim i As Long                       '段落番号
+Dim objPara As Object               '対象となる段落オブジェクト
+Dim brnMark                         'マークダウン記号の有無
+Dim brnHdg                          'アウトラインの有無
+      
+'進捗状況を表示する
+Application.StatusBar = "処理を決定しています。"
+
+'対象ドキュメントの段落オブジェクトのコレクションを取得する
+Set objParas = ActiveDocument.Paragraphs
+
+'マークダウン記号の有無を確認する
+For Each objPara In objParas
+    If objPara.Range.Characters.First = strMark Then brnMark = True
+Next
+
+'アウトラインの有無を確認する
+For i = 1 To objParas.Count
+    Set objPara = objParas(i)
+    If objPara.Range.ListFormat.ListString <> "" Then brnHdg = True
+Next
+
+'マークダウン記号と見出しスタイルの有無に応じてマクロを起動する
+If brnHdg = True And brnMark <> True Then
+    'アウトラインに応じてマークダウンに変換する
+    Call OutlineToMarkdown
+    
+Else
+    'スタイルを定義する
+    Call ConfigStyle
+        
+    'アウトラインを定義する
+    Call ConfigOutline
+        
+    If brnMark = True Then
+        'マークダウンに応じてアウトラインを設定する
+        Call markdownToOutline
+    Else
+        '全ての段落にアウトラインを設定し、標準スタイルを適用する
+        For Each objPara In objParas
+            objPara.Range.ListFormat.ApplyListTemplateWithLevel _
+                ListTemplate:=ListGalleries(wdOutlineNumberGallery).ListTemplates(1), _
+                ContinuePreviousList:=True, _
+                ApplyTo:=wdListApplyToWholeList, _
+                DefaultListBehavior:=wdWord10ListBehavior
+                
+            objPara.Range.Style = ActiveDocument.Styles("標準")
+        Next
+    End If
+End If
+    
+End Sub
+Sub markdownToOutline()
+'マークダウンからアウトラインへの変換を行います。
+'1つ目の段落から、最初のマークダウン記号までの間は、書式を変更してはならないため、
+'処理をスキップします。
+'補足など、文書の最後にアウトラインを設定したくない部分がある場合に対応するため、
+'行頭が空白文字の場合は、オプションの設定に応じ処理を終了するようにします。
+
+Dim i As Long               '段落番号
+Dim objPara As Object       '対象となる段落オブジェクト
+Dim objParaPrev As Object   '対象となる段落の直前の段落オブジェクト
+Dim strText As String       '段落内テキスト
+Dim x As Long               'マークダウン記号の個数
+           
+'進捗状況を表示する
+Application.StatusBar = "アウトラインに変換しています。"
+
+'最初のマークダウン記号まで処理をスキップする
+For i = 1 To objParas.Count
+    Set objPara = objParas(i)
+    If objPara.Range.Characters.First = strMark Then Exit For
+Next
+ 
+'段落ごとに見出しのアウトラインレベルなどを設定する
+For i = i To objParas.Count
+    '行頭が空白文字の場合は処理を終了する
+    If strBlankStop = "する" And objParas(i).Range.Characters.First = "　" Then Exit For
+    
+    '段落内の文字列を取得する
+    strText = objParas(i).Range.Text
+    
+    '1文字目がマークダウン記号かどうかに応じて処理を行う
+    If Left(strText, 1) = strMark Then
+       'マークダウン記号が9個の場合から順に見出しのアウトラインレベルを設定する
+       For x = 9 To 1 Step -1
+            '該当する段落の場合にアウトラインレベルを設定する
+            If Left(strText, x) = String(x, strMark) Then
+               'マークダウン記号を削除する
+               objParas(i).Range.Text = Right(strText, Len(strText) - x)
+                                
+               'アウトラインの書式を適用する
+               objParas(i).Range.ListFormat.ApplyListTemplateWithLevel _
+                   ListTemplate:=ListGalleries(wdOutlineNumberGallery).ListTemplates(1), _
+                   ContinuePreviousList:=True, _
+                   ApplyTo:=wdListApplyToWholeList, _
+                   DefaultListBehavior:=wdWord10ListBehavior
+               
+                'アウトラインレベルを適用する
+                objParas(i).Range.SetListLevel (x)
+                                 
+                '次のレベルを処理する
+                Exit For
+            End If
+       Next x
+    Else
+        '段落オブジェクトを取得する
+        Set objPara = objParas(i)
+        Set objParaPrev = objParas(i - 1)
+        
+        '前の段落が標準スタイルの場合のインデントを設定する
+        If objParaPrev.Range.ListFormat.ListString = "" Then
+            objPara.FirstLineIndent = objParaPrev.FirstLineIndent
+        End If
+     
+        '前の段落のスタイルに応じて標準スタイルのインデントを設定する
+        If objParaPrev.Range.ListFormat.ListString <> "" Then
+            '前の段落が見出しの場合の最初の行のインデントを設定する
+            If strFirstNo = "第１" Then
+                Select Case objParaPrev.Range.ListFormat.ListLevelNumber
+                    Case 1
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 3
+                    Case 2
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2
+                    Case 3
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2.5
+                    Case 4
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2
+                    Case 5
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2.5
+                    Case 6
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 1.5
+                    Case 7
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2.5
+                    Case 8
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 1.5
+                    Case 9
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2.5
+                    Case Else
+                         objPara.FirstLineIndent = objParaPrev.FirstLineIndent
+                End Select
+             Else
+                Select Case objParas(i - 1).Range.ListFormat.ListLevelNumber
+                    Case 1
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2
+                    Case 2
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2.5
+                    Case 3
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2
+                    Case 4
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2.5
+                    Case 5
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 1.5
+                    Case 6
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2.5
+                    Case 7
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 1.5
+                    Case 8
+                       objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2.5
+                    Case 9
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent + sngFont * 2
+                    Case Else
+                        objPara.FirstLineIndent = objParaPrev.FirstLineIndent
+                End Select
+             End If
+        Else
+            '前の段落が標準スタイルの場合の最初の行のインデントを設定する
+            objPara.FirstLineIndent = objParaPrev.FirstLineIndent
+        End If
+        '左のインデントを設定する
+        objPara.LeftIndent = objParaPrev.LeftIndent
+    End If
+Next
+
+End Sub
+
+Sub OutlineToMarkdown()
+'アウトラインからマークダウンへの変換を行います。
+'1つ目の段落から、最初の見出しスタイルまでの間は、書式を変更してはならないため、
+'処理をスキップします。
+'補足など、文書の最後にアウトラインを設定したくない部分がある場合に対応するため、
+'行頭が空白文字の場合は、オプションの設定に応じ処理を終了するようにします。
+
+
+Dim objPara As Object       '対象となる段落オブジェクト
+Dim i As Long               '段落番号
+Dim x As Long               'マークの個数
+
+'進捗状況を表示する
+Application.StatusBar = "マークダウンに変換しています。"
+
+'最初の見出しまで移動
+For i = 1 To objParas.Count
+    Set objPara = objParas(i)
+    If objPara.Range.ListFormat.ListString <> "" Then Exit For
+Next
+
+'段落ごとに処理を行う
+For i = i To objParas.Count
+    '空白行の場合は処理を終了する
+    If strBlankStop = "する" And objParas(i).Range.Characters.First = "　" Then Exit For
+    
+    'アウトラインのレベルに応じてマークダウンを追加する
+    If objParas(i).Range.ListFormat.ListString <> "" Then
+        For x = 1 To objParas(i).Range.ListFormat.ListLevelNumber
+            objParas(i).Range.Text = strMark & objParas(i).Range.Text
+        Next
+    End If
+    
+    '標準スタイルを適用する
+    objParas(i).Range.Style = ActiveDocument.Styles("標準")
+Next
+
+End Sub
+
+Sub ConfigStyle()
+'スタイルの設定を行います。
+'インデントについては、アウトラインにもスタイルにも設定できるようになっています。
+'両方に同じ設定を行うとメニューからアウトラインを設定しても、スタイルを設定してもインデントが
+'変わらないように良いようにできそうです。
+'しかし、そのようにした場合、アウトラインの「番号の設定」などを行うと、なぜかインデントが乱れて
+'しまいます。
+
+'このため､インデントは､アウトラインのみに設定しています｡
+
+'インデントの設定は､文字数で行うべきという件に関しては､こちらの記事に詳しい解説があります｡
+'https://we-vba.info/word_vba/block5/
+
+'そもそも、ワードのスタイルとは何なのかについては、こちらを参考にしてください。
+'https://www.tipsfound.com/word/01204
+
+'スタイル名には、strStyleという変数を割り当てています。
+'変数については、その宣言や命名のしかたが悩ましいところなのですが、次のようにするのが
+'VBAアセットのスタイルです。
+
+'変数の宣言は必ず行う
+'https://vba-assets.net/variable/
+
+'変数の命名には、ハンガリアン法を用いる
+'https://vba-assets.net/hungarian/
+
+Dim i As Long               '段落番号
+Dim objPara As Object       '対象となる段落オブジェクト
+Dim x As Long               'スタイル番号
+Dim strStyle As String      'スタイル名'
+
+'進捗状況を表示する
+Application.StatusBar = "スタイルを定義しています。"
+
+'最初のマークダウン記号の段落を選択する
+For i = 1 To objParas.Count
+    Set objPara = objParas(i)
+    If objPara.Range.Characters.First = strMark Then
+        objPara.Range.Select
+    Exit For
+    End If
+Next
+
+'番号ごとにスタイルを設定する
+For x = 0 To 9          '番号0は標準スタイル
+    'スタイル名を設定する
+    If x = 0 Then
+        strStyle = "標準"
+    Else
+        strStyle = "見出し " & x
+    End If
+
+    'スタイルの定義
+    With ActiveDocument.Styles(strStyle)
+        .AutomaticallyUpdate = False                    'スタイルの再定義
+        .BaseStyle = ""                                 '基準にするスタイル
+        .NextParagraphStyle = "標準"                    '次の段落のスタイル
+    
+        With .Font
+            .NameFarEast = strFont                  'アジア言語のフォント名
+            .NameAscii = strFont                    '英数字に使用するフォント
+            .NameOther = strFont                    'その他の文字に使用するフォント
+            .Name = strFont                         '書体名
+            .Size = sngFont                         'フォントサイズ
+            .Bold = False                           '太字
+            .Italic = False                         'イタリック
+            .Underline = wdUnderlineNone            'アンダーライン
+            .Outline = False                        '中抜き
+            .Emboss = False                         'エンボス
+            .Shadow = False                         '影付き
+            .Hidden = False                         '隠し文字
+            .SmallCaps = False                      '小型英大文字
+            .Color = wdColorAutomatic               '色
+            .Engrave = False                        '浮き彫り
+            .Superscript = False                    '上付き文字
+            .Subscript = False                      '下付き文字
+            .Scaling = 100                          'フォントサイズ
+            .Kerning = 0                            'カーニング
+            .DisableCharacterSpaceGrid = False      '1 行あたりの文字数
+            .EmphasisMark = wdEmphasisMarkNone      '傍点
+            .Ligatures = wdLigaturesNone            '合字
+            .NumberForm = wdNumberFormDefault       '数値の表示形式
+            .StylisticSet = wdStylisticSetDefault   'スタイル セット
+            .ContextualAlternates = 0               'コンテキスト代替
+        End With
+        
+        With .ParagraphFormat
+            .LeftIndent = 0                             '左のインデントをリセット
+            .FirstLineIndent = 0                        'ぶら下げインデントをリセット
+            .CharacterUnitRightIndent = 0               '右のインデント
+            .SpaceBefore = 0                            '段落前の間隔
+            .SpaceAfter = 0                             '段落後の間隔
+            .LineSpacingRule = wdLineSpaceSingle        '行間
+            .Alignment = wdAlignParagraphJustify        '配置
+            .WidowControl = False                       '1行残して段落を区切る
+            .KeepWithNext = False                       '次の段落と分離しない
+            .KeepTogether = False                       '段落を分割しない
+            .PageBreakBefore = False                    '段落前で改ページ
+            .NoLineNumber = False                       '行番号
+            .Hyphenation = True                         'ハイフネーション
+            .FarEastLineBreakControl = True             '禁則処理
+            .WordWrap = True                            'ワードラップ
+            .HangingPunctuation = True                  '句読点のぶら下げ
+            .HalfWidthPunctuationOnTopOfLine = False    '行頭の記号を半角
+            .AddSpaceBetweenFarEastAndAlpha = False     '日本語と英字の間隔を自動調整
+            .AddSpaceBetweenFarEastAndDigit = False     '日本語と数字の間隔を自動調整
+            .BaseLineAlignment = wdBaselineAlignAuto    '文字の配置
+                
+            'アウトラインレベルを設定
+            Select Case x
+                Case 0
+                    .OutlineLevel = wdOutlineLevelBodyText
+                Case 1
+                    .OutlineLevel = wdOutlineLevel1
+                Case 2
+                    .OutlineLevel = wdOutlineLevel2
+                Case 3
+                    .OutlineLevel = wdOutlineLevel3
+                Case 4
+                    .OutlineLevel = wdOutlineLevel4
+                Case 5
+                    .OutlineLevel = wdOutlineLevel5
+                Case 6
+                    .OutlineLevel = wdOutlineLevel6
+                Case 7
+                    .OutlineLevel = wdOutlineLevel7
+                Case 8
+                    .OutlineLevel = wdOutlineLevel8
+                Case 9
+                    .OutlineLevel = wdOutlineLevel9
+            End Select
+        End With
+    End With
+Next
+
+End Sub
+
+Sub ConfigOutline()
+'アウトライン表示を行う際には、アウトラインとスタイルを公文書方式の書式に合わせて設定します。
+
+'裁判所提出用文書の書式は､こちらを参考にさせていただきました｡
+'https://www.nichibenren.or.jp/legal_advice/oyakudachi/format.html
+
+'Wordのアウトラインの設定方法については、こちらをご覧ください。
+'https://office-hack.com/word/outline/
+
+'アウトラインのレベル番号1から9までについて、書式を設定してゆきます。
+'ワードのメニューでは、「段落」－「アウトライン」－「新しいアウトラインの定義」で
+'設定する項目をマクロで自動的に設定することになります。
+
+'最後に設定したアウトラインをリストに登録します｡
+'文書全体に登録してしまうと､アウトラインの設定を開始する前の行にまで見出しが設定されてしまうので､
+'選択範囲にのみ適用しています｡
+
+'「左インデントからの距離」と「インデント位置」は、mm単位で設定します。
+
+'細部は、こちらを参考にしてください。
+'http://office-qa.com/Word/wd44.htm
+
+Dim i As Long               '段落番号
+Dim objPara As Object       '対象となる段落オブジェクト
+Dim x As Long       'アウトライン番号
+Dim objList As Object
+
+'進捗状況を表示する
+Application.StatusBar = "アウトラインを定義しています。"
+
+'アウトラインのテンプレートを設定する
+Set objList = ListGalleries(wdOutlineNumberGallery).ListTemplates(1)
+
+'各アウトラインレベルを定義する
+For x = 1 To 9
+    With objList.ListLevels(x)
+        .TrailingCharacter = wdTrailingNone     '番号の後に挿入する文字
+        .Alignment = wdListLevelAlignLeft       '行の配置
+        .StartAt = 1                            '開始番号
+        
+        'レベルごとにアウトラインを定義する
+        If strFirstNo = "第１" Then
+            Select Case x
+                Case 1
+                    .NumberFormat = "第%1　"                            '番号書式
+                    .NumberStyle = wdListNumberStyleArabicFullWidth     '番号のスタイル
+                    .NumberPosition = sngFont * 0                       '左インデントからの距離
+                    .TextPosition = sngFont * 2                         'インデント位置
+                    .LinkedStyle = "見出し 1"                           'リンクされているスタイル
+                    .ResetOnHigher = 0                                  '番号を付け直す前レベル
+                Case 2
+                    .NumberFormat = "%2　"
+                    .NumberStyle = wdListNumberStyleArabicFullWidth
+                    .NumberPosition = sngFont * 1
+                    .TextPosition = sngFont * 2
+                    .LinkedStyle = "見出し 2"
+                    .ResetOnHigher = 1
+                Case 3
+                    .NumberFormat = "(%3)　"
+                    .NumberStyle = wdListNumberStyleArabic
+                    .NumberPosition = sngFont * 1.5
+                    .TextPosition = sngFont * 3
+                    .LinkedStyle = "見出し 3"
+                    .ResetOnHigher = 2
+                Case 4
+                    .NumberFormat = "%4　"
+                    .NumberStyle = wdListNumberStyleAiueo
+                    .NumberPosition = sngFont * 3
+                    .TextPosition = sngFont * 4
+                    .LinkedStyle = "見出し 4"
+                    .ResetOnHigher = 3
+                Case 5
+                    .NumberFormat = "(%5)　"
+                    .NumberStyle = wdListNumberStyleAiueoHalfWidth
+                    .NumberPosition = sngFont * 3.5
+                    .TextPosition = sngFont * 5
+                    .LinkedStyle = "見出し 5"
+                    .ResetOnHigher = 4
+                Case 6
+                    .NumberFormat = "%6　"
+                    .NumberStyle = wdListNumberStyleLowercaseLetter
+                    .NumberPosition = sngFont * 5.5
+                    .TextPosition = sngFont * 6
+                    .LinkedStyle = "見出し 6"
+                    .ResetOnHigher = 5
+                Case 7
+                    .NumberFormat = "(%7)　"
+                    .NumberStyle = wdListNumberStyleLowercaseLetter
+                    .NumberPosition = sngFont * 5.5
+                    .TextPosition = sngFont * 7
+                    .LinkedStyle = "見出し 7"
+                    .ResetOnHigher = 6
+                Case 8
+                    .NumberFormat = "%8　"
+                    .NumberStyle = wdListNumberStyleLowercaseRoman
+                    .NumberPosition = sngFont * 7.5
+                    .TextPosition = sngFont * 8
+                    .LinkedStyle = "見出し 8"
+                    .ResetOnHigher = 7
+                Case 9
+                    .NumberFormat = "(%9)　"
+                    .NumberStyle = wdListNumberStyleLowercaseRoman
+                    .NumberPosition = sngFont * 7.5
+                    .TextPosition = sngFont * 9
+                    .LinkedStyle = "見出し 9"
+                    .ResetOnHigher = 8
+            End Select
+        Else
+            Select Case x
+                Case 1
+                    .NumberFormat = "%1　"
+                    .NumberStyle = wdListNumberStyleArabicFullWidth
+                    .NumberPosition = sngFont * 0
+                    .TextPosition = sngFont * 1
+                    .LinkedStyle = "見出し 1"
+                    .ResetOnHigher = 0
+                Case 2
+                    .NumberFormat = "(%2)　"
+                    .NumberStyle = wdListNumberStyleArabic
+                    .NumberPosition = sngFont * 0.5
+                    .TextPosition = sngFont * 2
+                    .LinkedStyle = "見出し 2"
+                    .ResetOnHigher = 1
+                Case 3
+                    .NumberFormat = "%3　"
+                    .NumberStyle = wdListNumberStyleAiueo
+                    .NumberPosition = sngFont * 2
+                    .TextPosition = sngFont * 3
+                    .LinkedStyle = "見出し 3"
+                    .ResetOnHigher = 2
+                Case 4
+                    .NumberFormat = "(%4)　"
+                    .NumberStyle = wdListNumberStyleAiueoHalfWidth
+                    .NumberPosition = sngFont * 2.5
+                    .TextPosition = sngFont * 4
+                    .LinkedStyle = "見出し 4"
+                    .ResetOnHigher = 3
+                Case 5
+                    .NumberFormat = "%5　"
+                    .NumberStyle = wdListNumberStyleLowercaseLetter
+                    .NumberPosition = sngFont * 4.5
+                    .TextPosition = sngFont * 5
+                    .LinkedStyle = "見出し 5"
+                    .ResetOnHigher = 4
+                Case 6
+                    .NumberFormat = "(%6)　"
+                    .NumberStyle = wdListNumberStyleLowercaseLetter
+                    .NumberPosition = sngFont * 4.5
+                    .TextPosition = sngFont * 6
+                    .LinkedStyle = "見出し 6"
+                    .ResetOnHigher = 5
+                Case 7
+                    .NumberFormat = "%7　"
+                    .NumberStyle = wdListNumberStyleLowercaseRoman
+                    .NumberPosition = sngFont * 6.5
+                    .TextPosition = sngFont * 7
+                    .LinkedStyle = "見出し 7"
+                    .ResetOnHigher = 6
+                Case 8
+                    .NumberFormat = "(%8)　"
+                    .NumberStyle = wdListNumberStyleLowercaseRoman
+                    .NumberPosition = sngFont * 6.5
+                    .TextPosition = sngFont * 8
+                    .LinkedStyle = "見出し 8"
+                    .ResetOnHigher = 7
+                Case 9
+                    .NumberFormat = "%9　"
+                    .NumberStyle = wdListNumberStyleNumberInCircle
+                    .NumberPosition = sngFont * 8
+                    .TextPosition = sngFont * 9
+                    .LinkedStyle = "見出し 9"
+                    .ResetOnHigher = 8
+            End Select
+        End If
+    End With
+Next x
+
+'アウトラインの書式を適用する
+objList.Name = "アウトライン設定"
+End Sub
+
+
+
+
+
